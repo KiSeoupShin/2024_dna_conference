@@ -1,5 +1,5 @@
 # 2024 D&A Conference
-**AlphaCLIP + Pic2word**
+**Text Guided ZS-CIR with Segmentation**
 
 <br/>
 
