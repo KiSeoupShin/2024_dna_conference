@@ -1,5 +1,7 @@
 # 2024 D&A Conference
-## **Text Guided ZS-CIR with Segmentation**
+**Text Guided ZS-CIR with Segmentation**
+
+<br/>
 
 ## 1. 배경 & 목적
  
@@ -56,3 +58,11 @@
 | Segment-Image              | 0.00  | 0.22  | 0.55  | 6.22  | 13.04 | 19.92 |
 | Segment-Text               | 0.02  | 0.22  | 0.48  | 2.03  | 4.16  | 8.47  |
 | **Segment-Image + Text**   | 0.10 | 3.49 | 6.49 | 22.52 | 31.44 | 38.92 |
+
+<br/>
+
+##
+
+-참고 자료
+[2024-Research1팀-최종자료_Full_ver.pdf](https://github.com/user-attachments/files/18221572/2024-Research1.-._Full_ver.pdf)
+
