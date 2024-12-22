@@ -41,10 +41,10 @@
 | Pic2Word-Image             | 8.6   | 15.4  | 18.9  |
 | Pic2Word-Text              | 6.1   | 15.7  | 23.5  |
 | Pic2Word-Image + Text      | 10.2  | 20.2  | 26.6  |
-| **Segment-Composed**       | 16.77 | **30.95** | **38.99** |
-| Segment-Image              | 13.89 | 21.93 | 25.83 |
-| Segment-Text               | 7.72  | 20.97 | 30.14 |
-| **Segment-Image + Text**   | **17.23** | 28.75 | 35.13 |
+| **Segment-Composed**       | 16.7 | **33.1** | **42.5** |
+| Segment-Image              | 13.8 | 21.6 | 25.7 |
+| Segment-Text               | 8.06  | 21.3 | 30.6 |
+| **Segment-Image + Text**   | **17.4** | 28.5 | 34.8 |
 
 - ImageNet-S
   
