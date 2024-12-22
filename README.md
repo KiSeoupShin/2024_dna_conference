@@ -1,5 +1,5 @@
 # 2024 D&A Conference
-**Text Guided ZS-CIR with Segmentation**
+## **Text Guided ZS-CIR with Segmentation**
 
 <br/>
 
