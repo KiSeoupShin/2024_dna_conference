@@ -1,8 +1,6 @@
 # 2024 D&A Conference
 ## **Text Guided ZS-CIR with Segmentation**
 
-<br/>
-
 ## 1. 배경 & 목적
  
 - 기존의 Composed Image Retrieval(CIR) 은 전체 이미지와 텍스트를 통해 검색을 수행
