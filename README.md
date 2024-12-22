@@ -20,8 +20,14 @@
 
 ## 3. Model FLow
 
+- Model Architecture
+![image](https://github.com/user-attachments/assets/5e6f46e2-2521-49a4-88dd-b815c272d8a5)
 
-(이미지 추가 예정)
+
+
+- Training FlowChart
+![image](https://github.com/user-attachments/assets/e700ed49-1405-4d5e-a4a8-cbbe67f83d47)
+
 
 
 
