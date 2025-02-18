@@ -31,6 +31,7 @@ from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler
 import torchvision.datasets as datasets
 import torchvision.transforms as T
 from PIL import Image
+from torchvision import transforms
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -46,19 +47,38 @@ from utils import is_master, convert_models_to_fp32, TargetPad
 import model.alpha_clip as alpha_clip
 
 def load_model(args):
-    model, preprocess_val = alpha_clip.load("ViT-L/14", device='cpu', 
+    model, preprocess_val = alpha_clip.load("ViT-L/14", device=args.gpu, 
                                         alpha_vision_ckpt_pth="./checkpoints/clip_l14_grit+mim_fultune_6xe.pth", 
                                         lora_adapt=False, rank=-1)
-    img2text = IM_TRANSFORMER(num_query_token=1,
+    
+    model_clip, _, preprocess_clip = load(
+            args.model,
+            jit=False)
+
+    preprocess_mask = transforms.Compose([
+        transforms.ToTensor(), 
+        transforms.Resize((224, 224)),
+        transforms.Normalize(0.5, 0.26)
+    ])
+
+    #IM TRANSFORMER
+    img2text = IM_TRANSFORMER(num_query_token=4,
                             cross_attention_freq=2,
                             embed_dim=model.token_embedding.weight.shape[1])
+
+    # img2text = FiLMedIM2TEXT(embed_dim=model.embed_dim, 
+    #                         middle_dim=args.middle_dim, 
+    #                         output_dim=model.token_embedding.weight.shape[1],
+    #                         n_layer=args.n_layer)
+    
     '''img2text = IM2TEXT(embed_dim=model.embed_dim, 
                        middle_dim=args.middle_dim, 
                        output_dim=model.token_embedding.weight.shape[1],
-                       n_layer=args.n_layer) '''
+                       n_layer=args.n_layer)''' 
     # See https://discuss.pytorch.org/t/valueerror-attemting-to-unscale-fp16-gradients/81372
     if args.precision == "amp" or args.precision == "fp32" or args.gpu is None:
         convert_models_to_fp32(model)
+        convert_models_to_fp32(model_clip)
 
     if not torch.cuda.is_available():
         model.float()
@@ -66,27 +86,35 @@ def load_model(args):
         logging.warning("using CPU, this will be slow")
     else:
         model.cuda(args.gpu)
+        model_clip.cuda(args.gpu)
         img2text.cuda(args.gpu)
         if args.precision == "fp16":
             convert_weights(model)
+            convert_weights(model_clip)
             convert_weights(img2text)
         # Previously batch size and workers were global and not per GPU.
         # args.batch_size = args.batch_size / ngpus_per_node)
         # args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
         if args.distributed and args.use_bn_sync:
             model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+            model_clip = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model_clip)
         if args.distributed:
             model = torch.nn.parallel.DistributedDataParallel(model, 
+                device_ids=[args.gpu], 
+                find_unused_parameters=model.has_extra)
+            model_clip = torch.nn.parallel.DistributedDataParallel(model_clip, 
                 device_ids=[args.gpu], 
                 find_unused_parameters=model.has_extra)
             img2text = torch.nn.parallel.DistributedDataParallel(img2text, 
                 device_ids=[args.gpu], find_unused_parameters=False)
         if args.dp:
             model = torch.nn.DataParallel(model, device_ids=args.multigpu)
+            model_clip = torch.nn.DataParallel(model_clip, device_ids=args.multigpu)
             img2text = torch.nn.DataParallel(img2text, device_ids=args.multigpu)
 
         if args.precision == "fp16":
             convert_weights(model)
+            convert_weights(model_clip)
             convert_weights(img2text)
     if args.resume == 'auto':
         checkpoint_list = os.listdir(args.checkpoint_path)
@@ -112,13 +140,13 @@ def load_model(args):
         if not args.distributed and next(iter(sd_img2text.items()))[0].startswith('module'):
             sd_img2text = {k[len('module.'):]: v for k, v in sd_img2text.items()}
         model.load_state_dict(sd)
-        img2text.load_state_dict(sd_img2text)
+        img2text.load_state_dict(sd_img2text,strict=False)
         logging.info(
             f"=> loaded checkpoint '{args.resume}' (epoch {checkpoint['epoch']})"
         )
     else:
         logging.info("=> no checkpoint found at '{}'".format(args.resume))
-    return model, img2text, preprocess_val
+    return model, model_clip, img2text, preprocess_val, preprocess_clip, preprocess_mask
 
 def setup_log_save(args):
     if is_master(args):
@@ -151,7 +179,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
     # Log and save params.
     setup_log_save(args)
     # Load trained model
-    model, img2text, preprocess_val = load_model(args)
+    model, model_clip, img2text, preprocess_val, preprocess_clip, preprocess_mask = load_model(args)
     cudnn.benchmark = True
     cudnn.deterministic = False   
     root_project = os.path.join(get_project_root(), 'data')
@@ -178,7 +206,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
         num_workers=args.workers,
         pin_memory=True,
         drop_last=False)
-        evaluate_coco(model, img2text, args, source_dataloader)
+        evaluate_coco(model, model_clip, img2text, args, source_dataloader)
 
     elif args.eval_mode == 'cirr':
         source_dataset = CIRR(transforms=preprocess_val, 
@@ -260,14 +288,14 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
             num_workers=args.workers,
             pin_memory=True,
             drop_last=False)
-        evaluate_fashion(model, img2text, args, source_dataloader, target_dataloader)
+        evaluate_fashion(model, model_clip, img2text, args, source_dataloader, target_dataloader)
     elif args.eval_mode == 'imgnet':
         domains = ['cartoon', 'origami', 'toy', 'sculpture']
         prompt = ["a {} of *".format(domain) for domain in domains]
         source_path = os.path.join(root_project, "imgnet", "imgnet_real_query_alpha.txt")
         target_path = os.path.join(root_project, "imgnet", "imgnet_targets.txt")
-        source_dataset = ImageList(source_path, root=root_project, transforms=preprocess_val, is_labels=True, is_mask=True)
-        target_dataset = ImageList(target_path, root=root_project, transforms=preprocess_val, is_labels=True)
+        source_dataset = ImageList(source_path, root=root_project, transforms=preprocess_val, transforms_mask=preprocess_mask, is_labels=True, is_mask=True)
+        target_dataset = ImageList(target_path, root=root_project, transforms=preprocess_clip, is_labels=True)
         eval_func = evaluate_imgnet_retrieval
         source_dataloader = DataLoader(
             source_dataset,
@@ -283,7 +311,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
             num_workers=args.workers,
             pin_memory=True,
             drop_last=False)
-        eval_func(model, img2text, args, prompt, source_dataloader, target_dataloader)
+        eval_func(model, model_clip, img2text, args, prompt, source_dataloader, target_dataloader)
 
 def main(args):
 
@@ -364,6 +392,6 @@ def main(args):
 
 
 if __name__ == "__main__":
-    config_path = "./configs/evaluation_imgnet.yml"
+    config_path = "./configs/evaluation_coco.yml"
     args = parse_args_from_yaml(config_path)
     main(args)

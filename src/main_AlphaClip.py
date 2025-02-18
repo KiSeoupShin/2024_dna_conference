@@ -67,7 +67,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
     preprocess_train = preprocess
     preprocess_val = preprocess
 
-    img2text = IM_TRANSFORMER(num_query_token=1,
+    img2text = IM_TRANSFORMER(num_query_token=4,
                             cross_attention_freq=2,
                             embed_dim=model.token_embedding.weight.shape[1])
     '''img2text = IM2TEXT(embed_dim=model.embed_dim, 

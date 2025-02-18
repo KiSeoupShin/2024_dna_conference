@@ -69,11 +69,10 @@ class IM_TRANSFORMER(nn.Module):
         return Qformer, query_tokens
     
     def forward(self,  x: torch.Tensor):
-        image_embeds = x
+        image_embeds = x #(batch,1,embedding_dim)
         image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to('cuda')
-        query_tokens = self.query_tokens.expand(image_embeds.shape[0], -1, -1)
+        query_tokens = self.query_tokens.expand(image_embeds.shape[0], -1, -1) #(64,4,embedding_dim)
 
-        #print(query_tokens.shape, image_embeds.shape, image_atts.shape)
         query_output = self.Qformer.bert(
             inputs_embeds=query_tokens,
             encoder_hidden_states=image_embeds,

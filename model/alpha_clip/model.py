@@ -501,11 +501,13 @@ class CLIP(nn.Module):
     
     def encode_text_img(self, text, img_tokens):
         b_size = img_tokens.size(0)
+        q_size = img_tokens.size(1)
         x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
-        collect_ind = text == self.end_id 
+        collect_ind = text == self.end_id #[batch_size]
         collect_ind = collect_ind.nonzero()[:, 1]
-        img_tokens = img_tokens.view(b_size, 1, -1)
-        x = torch.cat([x[:, :collect_ind[0]], img_tokens, x[:, collect_ind[0]:-1]], dim=1)
+        img_tokens = img_tokens.view(b_size, q_size, -1)
+        #print(img_tokens.shape,self.positional_embedding.shape)
+        x = torch.cat([x[:, :collect_ind[0]], img_tokens, x[:, collect_ind[0]+q_size-1:-1]], dim=1)
         x = x + self.positional_embedding.type(self.dtype)
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x)
@@ -513,7 +515,8 @@ class CLIP(nn.Module):
         x = self.ln_final(x).type(self.dtype)
         # x.shape = [batch_size, n_ctx, transformer.width]
         # take features from the eot embedding (eot_token is the highest number in each sequence)    
-        x = x[torch.arange(x.size(0)), collect_ind+1] @ self.text_projection
+        #(batch_size,transformer.width) @ text_projection
+        x = x[torch.arange(x.size(0)), collect_ind+q_size] @ self.text_projection
         return x              
 
     def encode_text_img_vis(self, text, img_tokens, split_ind=4):
@@ -550,8 +553,10 @@ class CLIP(nn.Module):
         # img_tokens.shape = [batch_size, d_model]        
         if isinstance(img_tokens, tuple):
             b_size = img_tokens[0].shape[0]
+            q_size = img_tokens[0].shape[1]
         else:
             b_size = img_tokens.shape[0]
+            q_size = img_tokens.shape[1]
         if repeat:            
             text = text.repeat(b_size, 1)
         x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
@@ -561,12 +566,12 @@ class CLIP(nn.Module):
         if isinstance(img_tokens, tuple):
             indexes = ind_insert.nonzero()
             for i, index in enumerate(indexes):
-                img = img_tokens[i].view(b_size, 1, -1)
-                x = torch.cat([x[:, :index], img, x[:, index+1:]], dim=1)
+                img = img_tokens[i].view(b_size, q_size, -1)
+                x = torch.cat([x[:, :index], img, x[:, index+1:-(q_size-1)]], dim=1)
         else:
-            img_tokens = img_tokens.view(b_size, 1, -1)
+            img_tokens = img_tokens.view(b_size, q_size, -1)
             ind_insert = ind_insert.nonzero()[0]
-            x = torch.cat([x[:, :ind_insert], img_tokens, x[:, ind_insert+1:]], dim=1)
+            x = torch.cat([x[:, :ind_insert], img_tokens, x[:, ind_insert+1:-(q_size-1)]], dim=1)
         #x = torch.cat([x, torch.zeros_like(x).cuda()[:, :1, :]], dim=1)
         x = x + self.positional_embedding.type(self.dtype)
         x = x.permute(1, 0, 2)  # NLD -> LND
@@ -575,7 +580,7 @@ class CLIP(nn.Module):
         x = self.ln_final(x).type(self.dtype)
         # x.shape = [batch_size, n_ctx, transformer.width]
         # take features from the eot embedding (eot_token is the highest number in each sequence)    
-        x = x[torch.arange(x.size(0)), collect_ind] @ self.text_projection
+        x = x[torch.arange(x.size(0)), collect_ind+q_size-1] @ self.text_projection
         return x
 
     def forward(self, image, text, alpha):

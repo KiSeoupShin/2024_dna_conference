@@ -304,10 +304,11 @@ def evaluate_imgnet_retrieval(model, img2text, args, prompt, query_loader, targe
     return metrics
 
 
-def evaluate_coco(model, img2text, args, loader):
+def evaluate_coco(model, model_clip, img2text, args, loader):
     if not is_master(args):
         return
     model.eval()
+    model_clip.eval()
     img2text.eval()
 
     all_image_features = []  
@@ -317,6 +318,7 @@ def evaluate_coco(model, img2text, args, loader):
     all_text_full_features = [] 
 
     m = model.module if args.distributed or args.dp else model
+    m_c = model_clip.module if args.distributed or args.dp else model_clip
     logit_scale = m.logit_scale.exp()
     logit_scale = logit_scale.mean()
     with torch.no_grad():
@@ -331,7 +333,7 @@ def evaluate_coco(model, img2text, args, loader):
                 text_with_blank_query = text_with_blank_query.cuda(args.gpu, non_blocking=True)
 
             ## Target image features 
-            image_features, _ = m.visual(images, alphas, return_attn=True)             
+            image_features = m_c.encode_image(images)             
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)  
             id_split = tokenize(["*"])[0][1]
             ## Composed image features
