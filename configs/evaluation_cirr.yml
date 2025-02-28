@@ -1,0 +1,67 @@
+# config.yml
+
+# General parameters
+time_suffix: true
+train_data: './cc/dummy_train_data.csv'
+val_data: './cc/dummy_val_data.csv'
+prompts: null
+retrieval_data: null
+demo_out: "demo"
+source_data: null
+target_data: null
+target_pad: false
+query_file: null
+eval_mode: "cirr"   # ["coco", "cirr", "cirr_test", "fashion", "imgnet"]
+middle_dim: 512
+droprate: 0.1
+n_layer: 5
+query_tokens: 1
+dataset_type: "grit"   # ["webdataset", "csv", "inet", "auto", "inet,csv", "csv,inet", "directory", "fashion-iq", "cirr", "imgnet_r"]
+dataset_type_val: "auto"   # ["webdataset", "csv", "inet", "auto"]
+csv_separator: "|"
+csv_img_key: "img_path"
+csv_caption_key: "caption"
+imagenet_val: null
+imagenet_v2: null
+logs: "./logs/"
+name: "lr=0.0001_wd=0.2_agg=True_model=ViT-L/2025_02_23"
+workers: 0
+batch_size: 32
+epochs: 30
+lr: !!float 1e-4
+beta1: 0.0
+beta2: 0.99
+eps: !!float 1e-9
+wd: 0.2
+warmup: 10000
+use_bn_sync: false
+use_debiased_sampler: false
+use_prefix: false
+gpu: 0
+skip_scheduler: false
+save_frequency: 1
+save_most_recent: false
+zeroshot_frequency: 2
+regression_frequency: 2
+resume: "auto"
+precision: "amp"   # ["amp", "fp16", "fp32"]
+model: "ViT-L/14"
+# ["RN50", "RN101", "RN50x4",  "RN50x64", "RN50x16", "ViT-B/16", "ViT-B/32", "ViT-L/14", "ViT-H-14", 
+#                  "RN50_flat", "RN50_t1", "RN50_t2", "RN50_t3", "RN50_t4", "RN50_t5", "RN50_t6",
+#                  "RN50_flat_ft", "RN50_t1_pos_ft", "RN50_t2_pos_ft", "RN50_t1_pos", "RN50_t2_pos",
+#                  "RN50_flat_large", "RN50_t1_large", "RN50_t2_large",
+#                  "RN50_a2", "RN50_a2s"]
+openai_pretrained: true
+
+# Distributed training parameters
+dist_url: "tcp://127.0.0.1:6100"
+dist_backend: "nccl"
+skip_aggregate: false
+aggregate: True
+report_to: "tensorboard"
+wandb_notes: ""
+C: 3.16
+debug: false
+copy_codebase: false
+dp: false
+multigpu: null

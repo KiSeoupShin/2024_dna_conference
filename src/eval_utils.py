@@ -35,36 +35,60 @@ from utils import is_master
 from transformers import SamModel, SamProcessor, AutoProcessor, AutoModelForZeroShotObjectDetection
 import torchvision
 
+import sys
+sys.path.append("/home/gisub/Desktop/2024_dna_conference/sam2")
+
+from sam2.build_sam import build_sam2
+from sam2.sam2_image_predictor import SAM2ImagePredictor
+try:
+    from torchvision.transforms import InterpolationMode
+    BICUBIC = InterpolationMode.BICUBIC
+except ImportError:
+    BICUBIC = Image.BICUBIC
+
 class SegmentImage():
     def __init__(self):
         self.device = "cuda"
         self.dino_model, self.dino_processor = self.get_dino()
-        self.sam_model, self.sam_processor = self.get_sam()
+
+        self.checkpoint = "checkpoints/sam2.1_hiera_large.pt"
+        self.model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
+        self.sam_model = build_sam2(self.model_cfg, self.checkpoint)
+        self.sam_model.to(self.device)
+        self.sam_processor = SAM2ImagePredictor(self.sam_model)
 
         self.mask_transform = torchvision.transforms.Compose([
             torchvision.transforms.ToTensor(), 
             torchvision.transforms.Resize((224, 224)),
             torchvision.transforms.Normalize(0.5, 0.26)
         ])
+        self.transforms = torchvision.transforms.Compose([
+            torchvision.transforms.Resize((224, 224), interpolation=BICUBIC),
+            torchvision.transforms.CenterCrop((224, 224)),
+            self._convert_image_to_rgb,
+            torchvision.transforms.ToTensor(),
+            torchvision.transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+        ])
 
-    def __len__(self):
-        return len(self.captions)
+    def _convert_image_to_rgb(self, image):
+        return image.convert("RGB")
 
     def transform(self, image_path, text):
-        image = Image.open(image_path)
+        image = Image.open(image_path).convert('RGB')
 
-        if len(np.array(image).shape) != 3:
-            image = image.convert('RGB')
-
-        try:
-            input_boxes = self.dino_process(image, text)
+        input_boxes = self.dino_process(image, text)
+        if input_boxes[0] == []:
+            image_maskes = torch.ones([1] + list(np.array(image).shape[:2]), dtype=torch.uint8)
+        else:
+            if len(input_boxes[0]) != 1:
+                input_boxes = [[input_boxes[0][0]]]
             image_maskes = self.sam_process(image, input_boxes)
 
-            image_maskes = np.array(image_maskes)
-            binary_maskes = (image_maskes[0, :, :] != 0)
-        
-        except:
-            binary_maskes = np.ones(np.array(image).shape[1:], dtype=np.array(image).dtype)
+        image_maskes = self.transforms.transforms[0](image_maskes)
+        image_maskes = self.transforms.transforms[1](image_maskes)
+        image_maskes = np.array(image_maskes)
+
+        binary_maskes = (image_maskes[0, :, :] != 0)
             
         alphas = self.mask_transform((binary_maskes * 255).astype(np.uint8))
 
@@ -93,30 +117,42 @@ class SegmentImage():
 
         return results[0]['boxes'].unsqueeze(0).cpu().numpy().tolist()
 
-    def get_sam(self):
-        sam_model = SamModel.from_pretrained("facebook/sam-vit-huge").to(self.device)
-        sam_processor = SamProcessor.from_pretrained("facebook/sam-vit-huge")
+    # def get_sam(self):
+    #     sam_model = SamModel.from_pretrained("facebook/sam-vit-huge").to(self.device)
+    #     sam_processor = SamProcessor.from_pretrained("facebook/sam-vit-huge")
 
-        return sam_model, sam_processor
+    #     return sam_model, sam_processor
 
-    def sam_process(self, images, input_boxes):
-        inputs = self.sam_processor(images, input_boxes=input_boxes, return_tensors="pt").to(self.device)
-        with torch.no_grad():
-            outputs = self.sam_model(**inputs)
+    # def sam_process(self, images, input_boxes):
+    #     inputs = self.sam_processor(images, input_boxes=input_boxes, return_tensors="pt").to(self.device)
+    #     with torch.no_grad():
+    #         outputs = self.sam_model(**inputs)
 
-        masks = self.sam_processor.image_processor.post_process_masks(
-            outputs.pred_masks.cpu(), inputs["original_sizes"].cpu(), inputs["reshaped_input_sizes"].cpu()
-        )
+    #     masks = self.sam_processor.image_processor.post_process_masks(
+    #         outputs.pred_masks.cpu(), inputs["original_sizes"].cpu(), inputs["reshaped_input_sizes"].cpu()
+    #     )
 
-        combined_mask = None
-        for mask in masks[0]:
-            new_mask = mask.float()
-            if combined_mask is None:
-                combined_mask = new_mask
-            else:
-                combined_mask = np.maximum(combined_mask, new_mask)
+    #     combined_mask = None
+    #     for mask in masks[0]:
+    #         new_mask = mask.float()
+    #         if combined_mask is None:
+    #             combined_mask = new_mask
+    #         else:
+    #             combined_mask = np.maximum(combined_mask, new_mask)
         
-        return combined_mask
+    #     return combined_mask
+
+    def sam_process(self, image, boxes):
+        with torch.inference_mode():
+            self.sam_processor.set_image(image)
+            masks, scores, _ = self.sam_processor.predict(
+                point_coords=None,
+                point_labels=None,
+                box=boxes,
+                multimask_output=False,
+                )
+        
+        return torch.tensor(masks)
 
 
 def prepare_img(img_file, transform):
@@ -177,7 +213,9 @@ def visualize_results(model, model_clip, img2text, args, prompt, dataloader):
         transform = _transform(model.visual.input_resolution)
         query_img = prepare_img(query, transform)
         query_img = torch.unsqueeze(query_img, 0)
-        mask_img = segment_model.transform(query, args.prompts_to_query)  
+        # mask_img = segment_model.transform(query, args.prompts_to_query)  # real masking
+        # mask_img = torch.ones_like(query_img[0, :1, :, :])  # all masking
+        mask_img = torch.zeros_like(query_img[0, :1, :, :])  # no masking
         
         # h, w = query_img.shape[-2:]
         # mask_img = np.ones((h, w), dtype=np.uint8) * 255
@@ -275,7 +313,7 @@ def evaluate_imgnet_retrieval(model, model_clip, img2text, args, prompt, query_l
             all_query_labels = []
             all_text_features = []
             for batch in tqdm(query_loader):
-                images, alphas, labels = batch
+                images, alphas, labels, nouns = batch
                 if args.gpu is not None:
                     images = images.cuda(args.gpu, non_blocking=True)
                     labels = labels.cuda(args.gpu, non_blocking=True)
@@ -283,10 +321,16 @@ def evaluate_imgnet_retrieval(model, model_clip, img2text, args, prompt, query_l
                 ## Label is decided by class label and images' domain
                 labels += n_class * p_ind
                 image_features, _ = m.visual(images, alphas, return_attn=True)
+                noun_features = tokenize(nouns)
+                noun_features = noun_features.cuda(args.gpu, non_blocking=True)   
+                noun_features = m.encode_text(noun_features)
+                # noun_features += 1.0 * torch.rand(noun_features.shape[0], device=noun_features.device).unsqueeze(-1) * torch.randn(noun_features.shape, device=noun_features.device)
                 # image_features = m.encode_image(images)
                  ## Composed feature extraction
-                image_features_query = img2text(image_features.unsqueeze(1)) #unsqueeze for transformer                      
-                composed_feature = m.encode_text_img_retrieval(text, image_features_query, split_ind=id_split)                            
+                image_features = torch.add(image_features, noun_features)
+                image_features_query = img2text(image_features.unsqueeze(1)) #unsqueeze for transformer
+                # class_features_query = img2class(image_features) 
+                composed_feature = m.encode_text_img_retrieval(text, image_features_query, split_ind=id_split)                          
                 composed_feature = composed_feature / composed_feature.norm(dim=-1, keepdim=True)            
                 ## Image feature only
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)  
@@ -354,11 +398,15 @@ def evaluate_coco(model, model_clip, img2text, args, loader):
             id_split = tokenize(["*"])[0][1]
             ## Composed image features
             query_image_features, _ = m.visual(region_images, alphas, return_attn=True) 
-            query_image_tokens = img2text(query_image_features.unsqueeze(1)) #transform for transformer          
-            composed_feature_with_class = m.encode_text_img_retrieval(text_with_blank_query, query_image_tokens, split_ind=id_split, repeat=False)                        
+            text_full_features = m.encode_text(text_full)
+            # text_full_features += 1.0 * torch.rand(text_full_features.shape[0], device=text_full_features.device).unsqueeze(-1) * torch.randn(text_full_features.shape, device=text_full_features.device)
+            query_image_features = torch.add(query_image_features, text_full_features)
+            query_image_tokens = img2text(query_image_features.unsqueeze(1)) #transform for transformer    
+            # query_class_tokens = img2class(query_image_features)
+            composed_feature_with_class = m.encode_text_img_retrieval(text_with_blank_query, query_image_tokens, split_ind=id_split, repeat=False)                   
             composed_feature_with_class = composed_feature_with_class / composed_feature_with_class.norm(dim=-1, keepdim=True)        
             ## Text only features
-            text_full_features = m.encode_text(text_full)
+            # text_full_features = m.encode_text(text_full)
             text_full_features = text_full_features / text_full_features.norm(dim=-1, keepdim=True)            
             ## Query only features
             query_image_features = query_image_features / query_image_features.norm(dim=-1, keepdim=True)                               
@@ -390,10 +438,11 @@ def evaluate_coco(model, model_clip, img2text, args, loader):
     return metrics
 
 
-def evaluate_cirr(model, img2text, args, query_loader, target_loader):
+def evaluate_cirr(model, model_clip,img2text, args, query_loader, target_loader):
     if not is_master(args):
         return
     model.eval()
+    model_clip.eval()
     img2text.eval()
 
     all_image_features = []  
@@ -406,6 +455,7 @@ def evaluate_cirr(model, img2text, args, query_loader, target_loader):
     all_answer_paths = []
     all_raw_captions = []
     m = model.module if args.distributed or args.dp else model
+    m_c = model_clip.module if args.distributed or args.dp else model_clip
     logit_scale = m.logit_scale.exp()
     logit_scale = logit_scale.mean()   
 
@@ -414,16 +464,17 @@ def evaluate_cirr(model, img2text, args, query_loader, target_loader):
             target_images, target_paths = batch
             if args.gpu is not None:
                 target_images = target_images.cuda(args.gpu, non_blocking=True)
-            image_features = m.encode_image(target_images)
+            image_features = m_c.encode_image(target_images)
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)            
             all_image_features.append(image_features)
             for path in target_paths:
                 all_target_paths.append(path)
 
         for batch in tqdm(query_loader):
-            ref_images, text_with_blank, caption_only, ref_paths, answer_paths, raw_captions = batch
+            ref_images, ref_alphas, text_with_blank, caption_only, ref_paths, answer_paths, raw_captions = batch
             if args.gpu is not None:
                 ref_images = ref_images.cuda(args.gpu, non_blocking=True)
+                ref_alphas = ref_alphas.cuda(args.gpu, non_blocking=True)
                 text_with_blank = text_with_blank.cuda(args.gpu, non_blocking=True)
                 caption_only = caption_only.cuda(args.gpu, non_blocking=True)
             id_split = tokenize(["*"])[0][1]                        
@@ -436,8 +487,8 @@ def evaluate_cirr(model, img2text, args, query_loader, target_loader):
 
             caption_features = m.encode_text(caption_only)
             ## Composed features
-            query_image_features = m.encode_image(ref_images)
-            query_image_tokens = img2text(query_image_features)
+            query_image_features, _ = m.visual(ref_images, ref_alphas, return_attn=True)
+            query_image_tokens = img2text(query_image_features.unsqueeze(1))
             composed_feature = m.encode_text_img_retrieval(text_with_blank, query_image_tokens, split_ind=id_split, repeat=False)                
 
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)            
@@ -588,7 +639,7 @@ def evaluate_fashion(model, model_clip, img2text, args, source_loader, target_lo
 
     with torch.no_grad():
         for batch in tqdm(source_loader):
-            ref_images, ref_alphas, target_images, target_caption, caption_only, answer_paths, ref_names, captions = batch
+            ref_images, ref_alphas, nouns, target_images, target_caption, caption_only, answer_paths, ref_names, captions = batch
             for path in answer_paths:
                 all_answer_paths.append(path)
             all_reference_names.extend(ref_names)
@@ -601,6 +652,10 @@ def evaluate_fashion(model, model_clip, img2text, args, source_loader, target_lo
                 caption_only = caption_only.cuda(args.gpu, non_blocking=True)
             # image_features = m.encode_image(target_images)
             query_image_features, _ = m.visual(ref_images, ref_alphas, return_attn=True)
+            noun_features = tokenize(nouns)
+            noun_features = noun_features.cuda(args.gpu, non_blocking=True)   
+            noun_features = m.encode_text(noun_features)
+            query_image_features = torch.add(query_image_features, noun_features)
             id_split = tokenize(["*"])[0][1]            
             caption_features = m.encode_text(target_caption)                            
             query_image_tokens = img2text(query_image_features.unsqueeze(1))  # for QFormer          
@@ -665,27 +720,52 @@ def get_metrics_fashion(image_features, ref_features, target_names, answer_names
 
 
 def get_metrics_cirr(image_features, ref_features, reference_names, index_names, target_names):
+    import os
     metrics = {}
     distances = 1 - ref_features @ image_features.T
     sorted_indices = torch.argsort(distances, dim=-1).cpu()
     sorted_index_names = np.array(index_names)[sorted_indices]
-
-    # Delete the reference image from the results
+    
+    # 파일 경로에서 파일명만 추출
+    sorted_basenames = np.array([[os.path.basename(name) for name in row] for row in sorted_index_names])
+    reference_basenames = np.array([name for name in reference_names])  # 이미 파일명만 있으면 그대로 사용
+    target_basenames = np.array([name for name in target_names])  # 이미 파일명만 있으면 그대로 사용
+    
+    # Delete the reference image from the results (파일명 기준 비교)
     reference_mask = torch.tensor(
-        sorted_index_names != np.repeat(np.array(reference_names), 
-        len(index_names)).reshape(len(target_names), -1))        
-    sorted_index_names = sorted_index_names[reference_mask].reshape(sorted_index_names.shape[0],
-                                                                    sorted_index_names.shape[1] - 1)
-
-    # Compute the ground-truth labels wrt the predictions
+        sorted_basenames != np.repeat(reference_basenames.reshape(-1, 1), 
+        sorted_basenames.shape[1], axis=1))
+    
+    # 각 행마다 첫 번째 일치하는 참조 이미지 항목만 제거
+    filtered_sorted_names = []
+    for i, (names_row, basenames_row, ref_name) in enumerate(zip(sorted_index_names, sorted_basenames, reference_basenames)):
+        # 참조 이미지 위치 찾기
+        ref_indices = np.where(basenames_row == ref_name)[0]
+        
+        if len(ref_indices) > 0:
+            # 첫 번째 참조 이미지만 제거
+            first_ref_idx = ref_indices[0]
+            mask = np.ones(len(names_row), dtype=bool)
+            mask[first_ref_idx] = False
+            filtered_row = names_row[mask]
+        else:
+            # 참조 이미지가 없으면 마지막 항목 제거
+            filtered_row = names_row[:-1]
+        
+        filtered_sorted_names.append(filtered_row)
+    
+    sorted_index_names = np.array(filtered_sorted_names)
+    
+    # Compute the ground-truth labels wrt the predictions (파일명 기준 비교)
+    sorted_basenames = np.array([[os.path.basename(name) for name in row] for row in sorted_index_names])
     labels = torch.tensor(
-        sorted_index_names == np.repeat(np.array(target_names), 
-        len(index_names) - 1).reshape(len(target_names), -1))
-
+        sorted_basenames == np.repeat(target_basenames.reshape(-1, 1), 
+        sorted_basenames.shape[1], axis=1))
+    
     assert torch.equal(torch.sum(labels, dim=-1).int(), torch.ones(len(target_names)).int())
     for k in [1, 5, 10, 50, 100]:
         metrics[f"recall_R@{k}"] = (torch.sum(labels[:, :k]) / len(labels)).item() * 100
-
+    
     return metrics
 
 

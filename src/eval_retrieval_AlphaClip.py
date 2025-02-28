@@ -37,7 +37,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from model.clip import _transform, load
-from model.model import convert_weights, CLIP, IM2TEXT, IM_TRANSFORMER, FiLMedIM2TEXT
+from model.model import convert_weights, CLIP, IM2TEXT, IM_TRANSFORMER, FiLMedIM2TEXT, MultipleIM2TEXT
 from eval_utils import evaluate_imgnet_retrieval, evaluate_coco, evaluate_fashion, evaluate_cirr, evaluate_cirr_test
 from data import CsvDataset, CustomFolder, ImageList, CsvCOCO, FashionIQ, CIRR
 from params import parse_args, parse_args_from_yaml, get_project_root
@@ -69,6 +69,13 @@ def load_model(args):
     # img2text = FiLMedIM2TEXT(embed_dim=model.embed_dim, 
     #                         middle_dim=args.middle_dim, 
     #                         output_dim=model.token_embedding.weight.shape[1],
+    #                         output_tokens=args.query_tokens,
+    #                         n_layer=args.n_layer)
+    
+    # img2text = MultipleIM2TEXT(embed_dim=model.embed_dim, 
+    #                         middle_dim=args.middle_dim, 
+    #                         output_dim=model.token_embedding.weight.shape[1],
+    #                         output_tokens=args.query_tokens,
     #                         n_layer=args.n_layer)
     
     '''img2text = IM2TEXT(embed_dim=model.embed_dim, 
@@ -209,7 +216,7 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
         evaluate_coco(model, model_clip, img2text, args, source_dataloader)
 
     elif args.eval_mode == 'cirr':
-        source_dataset = CIRR(transforms=preprocess_val, 
+        source_dataset = CIRR(transforms=preprocess_val, transforms_mask=preprocess_mask, is_mask=True,
                               root=root_project)
         target_dataset = CIRR(transforms=preprocess_val, 
                               root=root_project, 
@@ -228,14 +235,15 @@ def main_worker(gpu, ngpus_per_node, log_queue, args):
             num_workers=args.workers,
             pin_memory=True,
             drop_last=False)
-        evaluate_cirr(model, 
+        evaluate_cirr(model,
+                      model_clip,
                       img2text, 
                       args, 
                       source_dataloader, 
                       target_dataloader)
 
     elif args.eval_mode == 'cirr_test':
-        source_dataset = CIRR(transforms=preprocess_val, 
+        source_dataset = CIRR(transforms=preprocess_val, transforms_mask=preprocess_mask, is_mask=True,
                               root=root_project, test=True)
         target_dataset = CIRR(transforms=preprocess_val, 
                               root=root_project, 
@@ -392,6 +400,6 @@ def main(args):
 
 
 if __name__ == "__main__":
-    config_path = "./configs/evaluation_imgnet.yml"
+    config_path = "./configs/evaluation_cirr.yml"
     args = parse_args_from_yaml(config_path)
     main(args)

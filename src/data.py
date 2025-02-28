@@ -66,10 +66,12 @@ from sam2.sam2_image_predictor import SAM2ImagePredictor
 ## caption split ./captions/cap.rc2.val.json
 ## image split ./image_splits/split.rc2.val.json
 class CIRR(Dataset):
-    def __init__(self, transforms, mode='caps', 
+    def __init__(self, transforms, transforms_mask=None, is_mask=False,mode='caps', 
     vis_mode=False, test=False, root='./data'):
         self.mode = mode
         self.transforms = transforms
+        self.transforms_mask = transforms_mask
+        self.is_mask = is_mask
         self.vis_mode = vis_mode
         ## mode to use test split of CIRR
         self.test = test
@@ -148,9 +150,16 @@ class CIRR(Dataset):
             text_with_blank = 'a photo of * , {}'.format(target_cap)    
             caption_only = tokenize(target_cap)[0]
             ref_text_tokens = tokenize(text_with_blank)[0]                 
-            return ref_images, ref_text_tokens, caption_only, \
+            if self.is_mask:
+                alpha_path = img_path.replace('/dev/', '/mask/')
+                ref_alphas = self.transforms_mask(Image.open(alpha_path))
+                return ref_images, ref_alphas[:1, :, :], ref_text_tokens, caption_only, \
                 str(self.ref_imgs[idx]), str(self.target_imgs[idx]), \
-                    target_cap                       
+                    target_cap  
+            else:
+                return ref_images, ref_text_tokens, caption_only, \
+                    str(self.ref_imgs[idx]), str(self.target_imgs[idx]), \
+                        target_cap                       
         else:
             tar_path = str(self.target_imgs[idx])
             img_path = os.path.join(self.root_img, tar_path)
@@ -179,6 +188,8 @@ class FashionIQ(Dataset):
         self.mode = mode
         self.is_return_target_path = is_return_target_path
         self.transforms = transforms
+        self.segment_model = SegmentImage()
+        self.cloth = cloth
         if mode == 'imgs':
             self.json_file = os.path.join(root_iq, 'image_splits', \
                 'split.{}.val.json'.format(cloth))
@@ -200,13 +211,13 @@ class FashionIQ(Dataset):
 
     def init_imgs(self):
         data = json.load(open(self.json_file, "r"))
-        self.target_imgs = [key + ".png" for key in data]        
+        self.target_imgs = [key + ".jpg" for key in data]        
 
     def init_data(self):
         def load_data(data):
             for d in data:
-                ref_path = os.path.join(self.root_img, d['candidate']+ ".png") 
-                tar_path = os.path.join(self.root_img, d['target']+ ".png")            
+                ref_path = os.path.join(self.root_img, d['candidate']+ ".jpg") 
+                tar_path = os.path.join(self.root_img, d['target']+ ".jpg")            
                 try:
                     Image.open(ref_path)
                     Image.open(tar_path)
@@ -242,12 +253,13 @@ class FashionIQ(Dataset):
             target_images = self.transforms(Image.open(tar_path))
             return target_images, tar_path            
         ref_images = self.transforms(Image.open(str(self.ref_imgs[idx])))
+        ref_alphas = self.segment_model.transform(str(self.ref_imgs[idx]), f"A {self.cloth}.")
         target_images = self.transforms(Image.open(str(self.target_imgs[idx])))
         cap1, cap2 = self.ref_caps[idx]
         text_with_blank = 'a photo of * , {} and {}'.format(cap2, cap1)
         token_texts = tokenize(text_with_blank)[0]                
         if self.is_return_target_path:
-            return ref_images, target_images, token_texts, token_texts, \
+            return ref_images, ref_alphas, f"a photo of {self.cloth} that {cap1}", target_images, token_texts, token_texts, \
                 str(self.target_imgs[idx]), str(self.ref_imgs[idx]), \
                     cap1
         else:
@@ -370,11 +382,14 @@ class ImageList(Dataset):
             alphas = alphas[0, :, :].unsqueeze(0)
 
         images = self.transforms(Image.open(img_path))
+
+        class_name = img_path.split("/")[-2]
+        noun = 'a photo of ' + IMAGENET2012_CLASSES[class_name]
         if self.return_filename:
             return images, img_path
         elif self.is_mask:
             target = self.labels[idx]
-            return images, alphas, target
+            return images, alphas, target, noun
         elif self.is_labels:
             target = self.labels[idx]
             return images, target       

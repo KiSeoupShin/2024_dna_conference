@@ -25,68 +25,6 @@ from torch import nn
 import torch.distributed as dist
 from transformers import BertConfig, BertLMHeadModel, BertTokenizer #Qformer 구조를 Bert에서 차용
 
-#Projection module transformer 버전
-class IM_TRANSFORMER(nn.Module):
-    def __init__(self,num_query_token=32,
-                    cross_attention_freq=2,
-                    vision_width=768,
-                    embed_dim=512):
-        super().__init__()
-        self.tokenizer = self.init_tokenizer()
-
-        self.Qformer, self.query_tokens = self.init_Qformer(
-            num_query_token, vision_width, cross_attention_freq
-        )
-        self.Qformer.resize_token_embeddings(len(self.tokenizer))
-        state_dict = self.Qformer.state_dict()
-        for name, param in self.Qformer.named_parameters():
-            if "_query" in name:
-                key_orig = name.replace("_query", "")
-                param.data.copy_(state_dict[key_orig])
-        
-        self.vision_proj = nn.Linear(self.Qformer.config.hidden_size, embed_dim)
-    
-    def init_tokenizer(self,truncation_side="right"):
-        tokenizer = BertTokenizer.from_pretrained("bert-base-uncased", truncation_side=truncation_side)
-        tokenizer.add_special_tokens({"bos_token": "[DEC]"})
-        return tokenizer
-    
-    def init_Qformer(self,num_query_token, vision_width, cross_attention_freq):
-        encoder_config = BertConfig.from_pretrained("bert-base-uncased")
-        encoder_config.encoder_width = vision_width
-        # insert cross-attention layer every other block
-        encoder_config.add_cross_attention = True
-        encoder_config.is_decoder=True
-        encoder_config.cross_attention_freq = cross_attention_freq
-        encoder_config.query_length = num_query_token
-        Qformer = BertLMHeadModel.from_pretrained(
-            "bert-base-uncased", config=encoder_config
-        )
-        query_tokens = nn.Parameter(
-            torch.zeros(1, num_query_token, encoder_config.hidden_size)
-        )
-        query_tokens.data.normal_(mean=0.0, std=encoder_config.initializer_range)
-        return Qformer, query_tokens
-    
-    def forward(self,  x: torch.Tensor):
-        image_embeds = x
-        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to('cuda')
-        query_tokens = self.query_tokens.expand(image_embeds.shape[0], -1, -1)
-
-        #print(query_tokens.shape, image_embeds.shape, image_atts.shape)
-        query_output = self.Qformer.bert(
-            inputs_embeds=query_tokens,
-            encoder_hidden_states=image_embeds,
-            encoder_attention_mask=image_atts,
-            use_cache=True,
-            return_dict=True,
-        )
-        image_feats = F.normalize(
-            self.vision_proj(query_output.last_hidden_state), dim=-1
-        )
-        return image_feats
-
-
 class FiLMGenerator(nn.Module):
     """Generate FiLM parameters gamma and beta from conditioning input"""
     def __init__(self, condition_dim, n_film_params):
@@ -107,36 +45,139 @@ class FiLMGenerator(nn.Module):
         # Add 1 to gamma (γ = 1 + Δγ as mentioned in paper)
         return gamma + 1, beta
 
+#Projection module transformer 버전
+class IM_TRANSFORMER(nn.Module): 
+    def __init__(self,num_query_token=32, cross_attention_freq=2, vision_width=768, embed_dim=512): 
+        super().__init__() 
+        self.tokenizer = self.init_tokenizer() 
+        self.Qformer, self.query_tokens = self.init_Qformer( num_query_token, vision_width, cross_attention_freq ) 
+        self.Qformer.resize_token_embeddings(len(self.tokenizer)) 
+        state_dict = self.Qformer.state_dict() 
+        
+        for name, param in self.Qformer.named_parameters(): 
+            if "_query" in name: 
+                key_orig = name.replace("_query", "") 
+                param.data.copy_(state_dict[key_orig]) 
+        self.film_generator = FiLMGenerator(embed_dim, 2 * embed_dim) 
+        self.vision_proj = nn.Linear(self.Qformer.config.hidden_size, embed_dim) 
+    
+    def init_tokenizer(self,truncation_side="right"): 
+        tokenizer = BertTokenizer.from_pretrained("bert-base-uncased", truncation_side=truncation_side) 
+        tokenizer.add_special_tokens({"bos_token": "[DEC]"}) 
+        return tokenizer 
+    
+    def init_Qformer(self,num_query_token, vision_width, cross_attention_freq): 
+        encoder_config = BertConfig.from_pretrained("bert-base-uncased") 
+        encoder_config.encoder_width = vision_width 
+        # insert cross-attention layer every other block 
+        encoder_config.add_cross_attention = True 
+        encoder_config.is_decoder=True 
+        encoder_config.cross_attention_freq = cross_attention_freq 
+        encoder_config.query_length = num_query_token 
+        Qformer = BertLMHeadModel.from_pretrained( "bert-base-uncased", config=encoder_config ) 
+        query_tokens = nn.Parameter( torch.zeros(1, num_query_token, encoder_config.hidden_size) ) 
+        query_tokens.data.normal_(mean=0.0, std=encoder_config.initializer_range) 
+        return Qformer, query_tokens 
+    
+    def forward(self, x: torch.Tensor): 
+        if len(x.shape) == 2: 
+            x = x.unsqueeze(1) 
+        image_embeds = x #(batch,1,embedding_dim) 
+        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to('cuda') 
+        query_tokens = self.query_tokens.expand(image_embeds.shape[0], -1, -1) #(64,4,embedding_dim) 
+        query_output = self.Qformer.bert( inputs_embeds=query_tokens, encoder_hidden_states=image_embeds, encoder_attention_mask=image_atts, use_cache=True, return_dict=True, ) 
+        gamma, beta = self.film_generator(image_embeds) 
+        x = gamma * query_output.last_hidden_state + beta 
+        image_feats = F.normalize( self.vision_proj(x), dim=-1 ) 
+        return image_feats
 
 class FiLMedIM2TEXT(nn.Module):
-    def __init__(self, embed_dim=512, middle_dim=512, output_dim=768, n_layer=2, dropout=0.1):
+    def __init__(self, embed_dim=512, middle_dim=512, output_dim=768, output_tokens=1, n_layer=2, dropout=0.1):
         super().__init__()
-
+        self.output_tokens = output_tokens
         layers = []
         dim = embed_dim
+        self.film_generators = nn.ModuleList()
+
         for _ in range(n_layer - 1):
-            block = []
-            block.append(nn.Linear(dim, middle_dim))
-            block.append(nn.Dropout(dropout))
-            block.append(nn.ReLU())            
+            block = [
+                nn.Linear(dim, middle_dim),
+                nn.Dropout(dropout),
+                nn.ReLU()
+            ]
             dim = middle_dim
-            layers.append(nn.Sequential(*block))        
+            layers.append(nn.Sequential(*block))
+            self.film_generators.append(FiLMGenerator(embed_dim, 2 * middle_dim))
+        
         self.layers = nn.Sequential(*layers)
+        self.fc_out = nn.Linear(middle_dim, output_dim)
+        
+    def forward(self, x: torch.Tensor):
+        if self.output_tokens > 1:
+            x = x.unsqueeze(1).repeat(1, self.output_tokens, 1)
+        
+        condition = x
+        for layer, film_generator in zip(self.layers, self.film_generators):
+            x = layer(x)
+            gamma, beta = film_generator(condition)
+            x = gamma * x + beta
 
-        self.film_generator = FiLMGenerator(embed_dim, 2 * middle_dim)
+        x = self.fc_out(x)
+        return x
 
+class MultipleIM2TEXT(nn.Module):
+    def __init__(self, embed_dim=512, middle_dim=512, output_dim=768, output_tokens=1, n_layer=2, dropout=0.1):
+        super().__init__()
+        self.output_tokens = output_tokens
+        
+        # output_tokens 개수만큼 독립적인 IM2TEXT 모듈 생성
+        self.im2text_modules = nn.ModuleList([
+            SingleIM2TEXT(embed_dim, middle_dim, output_dim, n_layer, dropout)
+            for _ in range(output_tokens)
+        ])
+    
+    def forward(self, x: torch.Tensor):
+        # 각 모듈의 출력을 저장할 리스트
+        outputs = []
+        
+        # 각 IM2TEXT 모듈에 대해 독립적으로 처리
+        for module in self.im2text_modules:
+            output = module(x)  # [batch_size, output_dim]
+            outputs.append(output)
+        
+        # 모든 출력을 결합 [batch_size, output_tokens, output_dim]
+        x = torch.stack(outputs, dim=1)
+        return x
+
+class SingleIM2TEXT(nn.Module):
+    def __init__(self, embed_dim=512, middle_dim=512, output_dim=768, n_layer=2, dropout=0.1):
+        super().__init__()
+        layers = []
+        dim = embed_dim
+        self.film_generators = nn.ModuleList()
+
+        for _ in range(n_layer - 1):
+            block = [
+                nn.Linear(dim, middle_dim),
+                nn.Dropout(dropout),
+                nn.ReLU()
+            ]
+            dim = middle_dim
+            layers.append(nn.Sequential(*block))
+            self.film_generators.append(FiLMGenerator(embed_dim, 2 * middle_dim))
+        
+        self.layers = nn.Sequential(*layers)
         self.fc_out = nn.Linear(middle_dim, output_dim)
         
     def forward(self, x: torch.Tensor):
         condition = x
-
-        for layer in self.layers:
+        for layer, film_generator in zip(self.layers, self.film_generators):
             x = layer(x)
+            gamma, beta = film_generator(condition)
+            x = gamma * x + beta
 
-        gamma, beta = self.film_generator(condition)
-        x = gamma * x + beta
-
-        return self.fc_out(x)
+        x = self.fc_out(x)
+        return x
 
 class IM2TEXT(nn.Module):
     def __init__(self, embed_dim=512, middle_dim=512, output_dim=512, n_layer=2, dropout=0.1):
